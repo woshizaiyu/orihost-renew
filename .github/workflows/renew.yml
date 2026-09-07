@@ -21,13 +21,13 @@ jobs:
       - name: Run renew
         env:
           ORIHOST_REMEMBER: ${{ secrets.ORIHOST_REMEMBER }}
-          ORIHOST_SERVER_IDS: ${{ vars.ORIHOST_SERVER_IDS }}
+          ORIHOST_SERVER_IDS: ${{ secrets.ORIHOST_SERVER_IDS }}
           ORIHOST_REMEMBER_1: ${{ secrets.ORIHOST_REMEMBER_1 }}
-          ORIHOST_SERVER_IDS_1: ${{ vars.ORIHOST_SERVER_IDS_1 }}
+          ORIHOST_SERVER_IDS_1: ${{ secrets.ORIHOST_SERVER_IDS_1 }}
           ORIHOST_REMEMBER_2: ${{ secrets.ORIHOST_REMEMBER_2 }}
-          ORIHOST_SERVER_IDS_2: ${{ vars.ORIHOST_SERVER_IDS_2 }}
+          ORIHOST_SERVER_IDS_2: ${{ secrets.ORIHOST_SERVER_IDS_2 }}
           ORIHOST_REMEMBER_3: ${{ secrets.ORIHOST_REMEMBER_3 }}
-          ORIHOST_SERVER_IDS_3: ${{ vars.ORIHOST_SERVER_IDS_3 }}
+          ORIHOST_SERVER_IDS_3: ${{ secrets.ORIHOST_SERVER_IDS_3 }}
           # 兼容旧变量名（完整 Cookie 串）
           ORIHOST_COOKIE: ${{ secrets.ORIHOST_COOKIE }}
           ORIHOST_COOKIE_1: ${{ secrets.ORIHOST_COOKIE_1 }}
