@@ -353,12 +353,18 @@ def do_renew_once(s, headers, server_uuid: str) -> dict:
             pass
     time.sleep(wait + DWELL_EXTRA + random.randint(1, 3))
 
-    for _ in range(3):
+    last_detail = "无响应"
+    for attempt in range(1, 4):
         try:
             r2 = api_get(s, "/api/client/renewal/complete", headers)
         except Exception as e:
+            last_detail = f"第 {attempt} 次请求异常: {e}"
+            print(f"  ⚠️ complete {last_detail}")
             time.sleep(2)
             continue
+        body = (r2.text or "")[:200]
+        print(f"  📥 complete 第 {attempt} 次 HTTP {r2.status_code}: {body}")
+        last_detail = f"HTTP {r2.status_code}: {body}"
         if r2.status_code in (401, 419):
             return {"status": "reauth", "message": f"complete {r2.status_code}，需刷新 session"}
         if r2.status_code in (200, 204):
@@ -378,7 +384,7 @@ def do_renew_once(s, headers, server_uuid: str) -> dict:
         if new_xsrf:
             headers["X-XSRF-TOKEN"] = new_xsrf
         time.sleep(2)
-    return {"status": "error", "message": "complete 失败（3 次重试）"}
+    return {"status": "error", "message": f"complete 失败（3 次重试，最后响应 {last_detail}）"}
 
 
 def renew_server_loop(s, xsrf: str, server_uuid: str) -> dict:
