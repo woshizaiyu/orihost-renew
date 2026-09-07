@@ -36,24 +36,27 @@ MAX_ATTEMPTS = int(os.environ.get("MAX_ATTEMPTS") or "5")
 DWELL_EXTRA = int(os.environ.get("DWELL_EXTRA") or "2")
 
 # ---------- 代理 ----------
-# 仅支持 http(s)/socks 代理；vless/trojan 等节点链接不能直接填，需先经 sing-box 转成本地代理再填
+# 优先级：ORIHOST_PROXY 显式指定 > 工作流 sing-box（IS_PROXY/PROXY_SERVER，由 NODE_LINK 节点链接转出） > 标准 HTTP(S)_PROXY
+# vless/trojan 等节点链接请填到 Secrets 的 NODE_LINK（工作流 sing-box 步骤会转成本地代理），不要填 ORIHOST_PROXY
 def _get_proxy():
-    p = (
-        os.environ.get("ORIHOST_PROXY")
-        or os.environ.get("ORIHOST_GOST_PROXY")
-        or os.environ.get("HTTPS_PROXY")
-        or os.environ.get("https_proxy")
-        or os.environ.get("HTTP_PROXY")
-        or os.environ.get("http_proxy")
-        or ""
-    ).strip()
-    if not p:
-        return None
-    scheme = p.split("://", 1)[0].lower() if "://" in p else ""
-    if scheme not in ("http", "https", "socks4", "socks5", "socks5h"):
-        print(f"  ⚠️ 不支持的代理格式 ({scheme}://)，已忽略走直连；节点链接需先经 sing-box 转出本地 http/socks 代理再填")
-        return None
-    return {"http": p, "https": p}
+    explicit = (os.environ.get("ORIHOST_PROXY") or os.environ.get("ORIHOST_GOST_PROXY") or "").strip()
+    if explicit:
+        scheme = explicit.split("://", 1)[0].lower() if "://" in explicit else ""
+        if scheme in ("http", "https", "socks4", "socks5", "socks5h"):
+            return {"http": explicit, "https": explicit}
+        print(f"  ⚠️ ORIHOST_PROXY 格式不支持 ({scheme}://)，已忽略；节点链接请填 NODE_LINK")
+    if os.environ.get("IS_PROXY", "").lower() == "true":
+        srv = (os.environ.get("PROXY_SERVER") or "socks5://127.0.0.1:1080").strip()
+        # setup_proxy.sh 的本地代理同时监听 http 1081；http 代理对 requests/curl_cffi 兼容最好，优先用它
+        if srv.lower() in ("socks5://127.0.0.1:1080", "socks5h://127.0.0.1:1080"):
+            srv = "http://127.0.0.1:1081"
+        print(f"  🔗 使用 sing-box 代理: {srv}")
+        return {"http": srv, "https": srv}
+    for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        p = (os.environ.get(k) or "").strip()
+        if p:
+            return {"http": p, "https": p}
+    return None
 
 PROXIES = _get_proxy()
 
