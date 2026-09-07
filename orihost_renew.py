@@ -36,6 +36,7 @@ MAX_ATTEMPTS = int(os.environ.get("MAX_ATTEMPTS") or "5")
 DWELL_EXTRA = int(os.environ.get("DWELL_EXTRA") or "2")
 
 # ---------- 代理 ----------
+# 仅支持 http(s)/socks 代理；vless/trojan 等节点链接不能直接填，需先经 sing-box 转成本地代理再填
 def _get_proxy():
     p = (
         os.environ.get("ORIHOST_PROXY")
@@ -47,6 +48,10 @@ def _get_proxy():
         or ""
     ).strip()
     if not p:
+        return None
+    scheme = p.split("://", 1)[0].lower() if "://" in p else ""
+    if scheme not in ("http", "https", "socks4", "socks5", "socks5h"):
+        print(f"  ⚠️ 不支持的代理格式 ({scheme}://)，已忽略走直连；节点链接需先经 sing-box 转出本地 http/socks 代理再填")
         return None
     return {"http": p, "https": p}
 
