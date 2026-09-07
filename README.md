@@ -117,6 +117,7 @@ python orihost_renew.py
 - **419 / session 刷新失败**：`remember_web` 已失效，重新登录按第一步重取 token 更新到 Secrets
 - **401 未认证**：同上，多为 token 填错（多了空格或只复制了一半）
 - **skipped / 已达上限**：正常现象，本周期续满了，下个周期 Actions 会再续
+- **面板显示 Renew Limit Reached / complete 报 500**：续期次数已满（免费服常见上限 7 次），脚本会自动判为跳过；等天数消耗、空出次数后定时任务会自动再续，不用管
 - **冷却中 xxxs 本轮跳过**：面板限流，超过 5 分钟脚本主动放弃，等 3 天后下一轮
 - **TG 收不到**：先确认 `TG_BOT_TOKEN` 与 `TG_CHAT_ID` 都填了，且机器人已和你开过会话（先给机器人发一句话）
 - **被 Cloudflare 拦截**：把节点链接填到 `NODE_LINK` 走代理，或换个时间手动重跑
