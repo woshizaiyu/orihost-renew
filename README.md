@@ -52,30 +52,28 @@ UUID 长这样（示例，填你自己的）：`670475f5-1206-48d3-b4ab-e86d75f5
 ## 三、GitHub Actions 部署（推荐）
 
 1. 新建仓库，把本目录文件推上去（保持 `orihost_renew.py` 在仓库根目录）
-2. 进仓库 `Settings → Secrets and variables → Actions`，注意这里有两个页签，要分开填：
-   - 先点 `Secrets` 页签 → `New repository secret` → `Name` 填 `ORIHOST_REMEMBER`，`Secret` 粘贴第一步复制的 token → `Add secret`（保存后值不可见是正常的）
-   - 再点 `Variables` 页签 → `New repository variable` → `Name` 填 `ORIHOST_SERVER_IDS`，`Value` 粘贴服务器 UUID → `Add variable`
+2. 进仓库 `Settings → Secrets and variables → Actions`，点 `Secrets` 页签 → `New repository secret`，按下表逐个建（保存后值不可见是正常的）：
 
-   名字必须一字不差（大写+下划线），填错位置（比如把 UUID 填进 Secrets）脚本会提示“未配置账号”。完整对照表：
+   名字必须一字不差（大写+下划线），所有变量全部建在 `Secrets` 下。完整对照表：
 
-| 名称 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `ORIHOST_REMEMBER` | Secret | 是 | 第一步拿到的 remember token 值 |
-| `ORIHOST_SERVER_IDS` | Variables | 是 | 服务器 UUID，逗号分隔 |
-| `TG_BOT_TOKEN` | Secret | 否 | Telegram 机器人 token |
-| `TG_CHAT_ID` | Secret | 否 | Telegram 聊天 ID |
-| `ORIHOST_PROXY` | Secret | 否 | 代理，如 `http://127.0.0.1:1081`，解决 CI 的 IP 被 CF 拦时用 |
+| 名称 | 必填 | 说明 |
+|---|---|---|
+| `ORIHOST_REMEMBER` | 是 | 第一步拿到的 remember token 值 |
+| `ORIHOST_SERVER_IDS` | 是 | 服务器 UUID，逗号分隔 |
+| `TG_BOT_TOKEN` | 否 | Telegram 机器人 token |
+| `TG_CHAT_ID` | 否 | Telegram 聊天 ID |
+| `ORIHOST_PROXY` | 否 | 代理，如 `http://127.0.0.1:1081`，解决 CI 的 IP 被 CF 拦时用 |
 
 3. 去 `Actions → Orihost Auto Renew → Run workflow` 手动跑一次，TG 能收到推送即正常
 4. 定时默认 `0 10 */3 * *`（每 3 天，北京时间 18:00），7 天有效期提前续是故意的，不要改成 7 天
 
 ### 多账号
 
-| 账号 | Secret | Variables |
-|---|---|---|
-| 账号1 | `ORIHOST_REMEMBER_1` | `ORIHOST_SERVER_IDS_1` |
-| 账号2 | `ORIHOST_REMEMBER_2` | `ORIHOST_SERVER_IDS_2` |
-| 账号3 | `ORIHOST_REMEMBER_3` | `ORIHOST_SERVER_IDS_3` |
+| 账号 | 在 Secrets 里建这两个 |
+|---|---|
+| 账号1 | `ORIHOST_REMEMBER_1` + `ORIHOST_SERVER_IDS_1` |
+| 账号2 | `ORIHOST_REMEMBER_2` + `ORIHOST_SERVER_IDS_2` |
+| 账号3 | `ORIHOST_REMEMBER_3` + `ORIHOST_SERVER_IDS_3` |
 
 单账号用不带后缀的即可；多账号与单账号可混用，脚本会自动汇总。
 旧变量名 `ORIHOST_COOKIE / ORIHOST_COOKIE_1 / ORI_COOKIE` 仍兼容（完整 Cookie 或裸 token 均可）。
