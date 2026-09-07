@@ -31,6 +31,10 @@ orihost-renew/
 4. 双击它的 `Value（值）` 那一格，全选复制（一长串无空格字符，几百个字符长度）。这就是要填的 `ORIHOST_REMEMBER`
 5. 填的时候注意：只粘贴纯值，前后不要带空格、不要带引号、不要带 `remember_web_xxx=` 前缀（带了也能用，但纯值最稳）
 
+格式长这样（已脱敏，只看形状，别照抄）：
+- token：`eyJpdiI6...中间几百字符...In0=`，字母数字+符号组成，一整行无空格无换行
+- 对错自查：长度几百字符、以 `eyJ` 开头是正常的；如果只有几十字符，你大概率复制的是别的 cookie，重找 `remember_web_` 开头那行
+
 备选方法：`F12` → `Network（网络）` → 刷新页面 → 点任意 `activity` 请求 → `Request Headers` 里复制 `Cookie` 整段（脚本会自动从里面提取）。
 
 ## 二、获取服务器 UUID
@@ -43,6 +47,7 @@ https://panel.orihost.com/server/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
 
 多台服务器用英文逗号分隔：`uuid1,uuid2`。
+UUID 长这样（示例，填你自己的）：`670475f5-1206-48d3-b4ab-e86d75f5a3fd`，5 段十六进制（8-4-4-4-12），面板地址栏 `/server/` 后面那段原样复制。
 
 ## 三、GitHub Actions 部署（推荐）
 
