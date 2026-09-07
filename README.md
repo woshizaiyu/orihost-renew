@@ -21,14 +21,17 @@ orihost-renew/
 4. `GET /api/client/renewal/complete` 领取续期天数
 5. 遇 419/401 自动刷新 XSRF 重试一次；`cooldown` 超过 5 分钟本轮跳过，`skipped` 表示已达本周期上限
 
-## 一、获取 remember token
+## 一、获取 remember token（填的是令牌，不是邮箱密码）
 
-1. 浏览器登录 `https://panel.orihost.com`
-2. 按 `F12` → `Application（应用）` → `Cookies` → `https://panel.orihost.com`
-3. 找到 `remember_web_xxxx` 那一项，复制它的 `值`（很长一串字符）
-4. 只填这个值即可（推荐）。也兼容填 `name=value` 或整段 Cookie 字符串，脚本会自动识别
+> 脚本不需要你的邮箱和密码，只需要登录态令牌。令牌失效了重新取一次即可，密码改了也不受影响。
 
-备选方法：`F12` → `Network（网络）` → 刷新页面 → 点任意 `activity` 请求 → `Request Headers` 里复制 `Cookie` 整段。
+1. 浏览器打开 `https://panel.orihost.com` 并登录（登录页如果有 `Remember me` 勾上）
+2. 按 `F12` 打开开发者工具 → 顶部切到 `Application（Edge 显示“应用程序”）` → 左侧展开 `Cookies` → 点 `https://panel.orihost.com`
+3. 右边列表里找到名字以 `remember_web_` 开头的那一行（后面跟一串 hash，如 `remember_web_59ba36...`）
+4. 双击它的 `Value（值）` 那一格，全选复制（一长串无空格字符，几百个字符长度）。这就是要填的 `ORIHOST_REMEMBER`
+5. 填的时候注意：只粘贴纯值，前后不要带空格、不要带引号、不要带 `remember_web_xxx=` 前缀（带了也能用，但纯值最稳）
+
+备选方法：`F12` → `Network（网络）` → 刷新页面 → 点任意 `activity` 请求 → `Request Headers` 里复制 `Cookie` 整段（脚本会自动从里面提取）。
 
 ## 二、获取服务器 UUID
 
@@ -44,7 +47,11 @@ https://panel.orihost.com/server/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ## 三、GitHub Actions 部署（推荐）
 
 1. 新建仓库，把本目录文件推上去（保持 `orihost_renew.py` 在仓库根目录）
-2. 仓库 `Settings → Secrets and variables → Actions` 按下表配置：
+2. 进仓库 `Settings → Secrets and variables → Actions`，注意这里有两个页签，要分开填：
+   - 先点 `Secrets` 页签 → `New repository secret` → `Name` 填 `ORIHOST_REMEMBER`，`Secret` 粘贴第一步复制的 token → `Add secret`（保存后值不可见是正常的）
+   - 再点 `Variables` 页签 → `New repository variable` → `Name` 填 `ORIHOST_SERVER_IDS`，`Value` 粘贴服务器 UUID → `Add variable`
+
+   名字必须一字不差（大写+下划线），填错位置（比如把 UUID 填进 Secrets）脚本会提示“未配置账号”。完整对照表：
 
 | 名称 | 类型 | 必填 | 说明 |
 |---|---|---|---|
