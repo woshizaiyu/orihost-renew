@@ -318,6 +318,15 @@ def check_cooldown(s, headers, server_uuid: str) -> int:
     return 0
 
 
+def _page_says_limit_reached(s, server_uuid: str) -> bool:
+    """面板在已达续期上限时 complete 直接报 500，用服务器页面文案二次确认"""
+    try:
+        r = s.get(f"{PANEL}/server/{short_id(server_uuid)}", timeout=20)
+        return r.ok and "Renew Limit Reached" in (r.text or "")
+    except Exception:
+        return False
+
+
 def do_renew_once(s, headers, server_uuid: str) -> dict:
     # 冷却等待（超过 5 分钟则本轮放弃，避免 Actions 超时）
     cd = check_cooldown(s, headers, server_uuid)
@@ -367,6 +376,8 @@ def do_renew_once(s, headers, server_uuid: str) -> dict:
         last_detail = f"HTTP {r2.status_code}: {body}"
         if r2.status_code in (401, 419):
             return {"status": "reauth", "message": f"complete {r2.status_code}，需刷新 session"}
+        if r2.status_code == 500 and _page_says_limit_reached(s, server_uuid):
+            return {"status": "skipped", "message": "已达续期上限（面板显示 Renew Limit Reached）"}
         if r2.status_code in (200, 204):
             try:
                 res = r2.json() if r2.text else {}
