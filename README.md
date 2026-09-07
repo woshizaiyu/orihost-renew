@@ -62,7 +62,10 @@ UUID 长这样（示例，填你自己的）：`670475f5-1206-48d3-b4ab-e86d75f5
 | `ORIHOST_SERVER_IDS` | 是 | 服务器 UUID，逗号分隔 |
 | `TG_BOT_TOKEN` | 否 | Telegram 机器人 token |
 | `TG_CHAT_ID` | 否 | Telegram 聊天 ID |
-| `ORIHOST_PROXY` | 否 | 代理，如 `http://127.0.0.1:1081`，解决 CI 的 IP 被 CF 拦时用 |
+| `NODE_LINK` | 否 | 代理节点完整分享链接（vless/vmess/trojan/hysteria2/tuic/anytls/socks5），不填则直连 |
+| `ORIHOST_PROXY` | 否 | 手动指定的 http(s)/socks 代理，如 `http://127.0.0.1:1081`；节点链接填 `NODE_LINK`，不要填这里 |
+
+代理说明：直连优先。`NODE_LINK` 由工作流的 sing-box 步骤自动转成本地代理（`vless://` 这类链接只能填这里）；`ORIHOST_PROXY` 只接受 `http://` / `socks5://` 开头的代理地址。
 
 3. 去 `Actions → Orihost Auto Renew → Run workflow` 手动跑一次，TG 能收到推送即正常
 4. 定时默认 `0 10 */3 * *`（每 3 天，北京时间 18:00），7 天有效期提前续是故意的，不要改成 7 天
@@ -97,6 +100,8 @@ set ORIHOST_PROXY=http://127.0.0.1:7890
 python orihost_renew.py
 ```
 
+本地没有 sing-box 步骤，`NODE_LINK` 只在 Actions 里生效；本地要走代理请填 `ORIHOST_PROXY`（需是本机能连上的 http/socks 代理）。
+
 ## 五、环境变量全表
 
 | 变量 | 默认 | 说明 |
@@ -114,7 +119,7 @@ python orihost_renew.py
 - **skipped / 已达上限**：正常现象，本周期续满了，下个周期 Actions 会再续
 - **冷却中 xxxs 本轮跳过**：面板限流，超过 5 分钟脚本主动放弃，等 3 天后下一轮
 - **TG 收不到**：先确认 `TG_BOT_TOKEN` 与 `TG_CHAT_ID` 都填了，且机器人已和你开过会话（先给机器人发一句话）
-- **被 Cloudflare 拦截**：加 `ORIHOST_PROXY` 走代理，或换个时间手动重跑
+- **被 Cloudflare 拦截**：把节点链接填到 `NODE_LINK` 走代理，或换个时间手动重跑
 - **汇总 0 成功 0 跳过 N 失败**：看日志第一行，`curl_cffi=关` 表示依赖没装好，重跑 Install 步骤
 
 ## 安全提醒
