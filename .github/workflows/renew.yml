@@ -1,0 +1,39 @@
+name: Orihost Auto Renew
+
+on:
+  schedule:
+    # 每 3 天一次，UTC 10:00 = 北京时间 18:00（7 天有效期，提前续避免删机）
+    - cron: '0 10 */3 * *'
+  workflow_dispatch:
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run renew
+        env:
+          ORIHOST_REMEMBER: ${{ secrets.ORIHOST_REMEMBER }}
+          ORIHOST_SERVER_IDS: ${{ vars.ORIHOST_SERVER_IDS }}
+          ORIHOST_REMEMBER_1: ${{ secrets.ORIHOST_REMEMBER_1 }}
+          ORIHOST_SERVER_IDS_1: ${{ vars.ORIHOST_SERVER_IDS_1 }}
+          ORIHOST_REMEMBER_2: ${{ secrets.ORIHOST_REMEMBER_2 }}
+          ORIHOST_SERVER_IDS_2: ${{ vars.ORIHOST_SERVER_IDS_2 }}
+          ORIHOST_REMEMBER_3: ${{ secrets.ORIHOST_REMEMBER_3 }}
+          ORIHOST_SERVER_IDS_3: ${{ vars.ORIHOST_SERVER_IDS_3 }}
+          # 兼容旧变量名（完整 Cookie 串）
+          ORIHOST_COOKIE: ${{ secrets.ORIHOST_COOKIE }}
+          ORIHOST_COOKIE_1: ${{ secrets.ORIHOST_COOKIE_1 }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          ORIHOST_PROXY: ${{ secrets.ORIHOST_PROXY }}
+          RENEWAL_MAX: '21'
+          MAX_ATTEMPTS: '5'
+        run: python orihost_renew.py
