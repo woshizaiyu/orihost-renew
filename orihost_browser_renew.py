@@ -260,7 +260,8 @@ def cookie_login(sb, auth_raw: str) -> bool:
 def renew_one_server(sb, server_uuid: str) -> dict:
     sid = (server_uuid or "").split("-")[0][:8]
     print(f"\n  🖥 [{sid}] 打开服务器页...")
-    sb.open(f"{PANEL}/server/{server_uuid}")
+    # 面板路由用的是 8 位短 ID（如 /server/8651e616），填了完整 UUID 也只取前 8 位
+    sb.open(f"{PANEL}/server/{sid}")
     time.sleep(8)
 
     src = page_text(sb)
