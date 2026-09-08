@@ -7,19 +7,23 @@
 
 ```text
 orihost-renew/
-├── orihost_renew.py            # 核心脚本（鉴权维持 + 批量续期 + TG 推送）
-├── requirements.txt            # 依赖：curl_cffi + requests
+├── orihost_browser_renew.py    # 主力：浏览器自动续期（Cookie免登+读文章+Turnstile+Claim）
+├── orihost_renew.py            # 备用：纯 API 版（仅满额检测/诊断，claim 通不过验证）
+├── requirements.txt            # 依赖：curl_cffi + requests + seleniumbase
 ├── .github/workflows/renew.yml# GitHub Actions 定时任务（每 3 天 + 手动触发）
 └── README.md                   # 本说明文件
 ```
 
 ## 续期原理
 
-1. 携带 `remember_web_xxx` 长效 token 访问 `https://panel.orihost.com/dashboard`，服务端签发最新 `session + XSRF-TOKEN`
-2. `POST /api/client/servers/{uuid}/renew/begin` 获取广告链接 + 等待秒数 `dwell_seconds`
-3. 访问广告并等待 `dwell_seconds + 2~5s`（模拟阅读）
-4. `GET /api/client/renewal/complete` 领取续期天数
-5. 遇 419/401 自动刷新 XSRF 重试一次；`cooldown` 超过 5 分钟本轮跳过，`skipped` 表示已达本周期上限
+面板前端扒出来的真实流程（`assets/bundle.*.js`）：
+
+1. 点 `Renew Now` → `POST /api/client/servers/{id}/renew/begin` 返回文章链接 + `dwell_seconds`
+2. 点 `Read Article` 新标签读文章（提前关闭会被警告），面板内倒计时
+3. 倒计时走完出 Cloudflare Turnstile，必须点过验证，`Claim Renewal` 按钮才可点
+4. 点 `Claim Renewal` → `GET /api/client/renewal/complete?cf-turnstile-response=xxx` 完成续期（+7 天）
+
+结论：`complete` 强制要 Turnstile token，无 token 直接 500，所以主力跑**浏览器版**（真浏览器点验证，移植自 katabump 的过盾方案）；纯 API 版保留作满额检测和诊断用。
 
 ## 一、获取 remember token（填的是令牌，不是邮箱密码）
 
