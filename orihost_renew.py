@@ -341,6 +341,14 @@ def do_renew_once(s, headers, server_uuid: str) -> dict:
     except Exception as e:
         return {"status": "error", "message": f"begin 请求失败: {e}"}
 
+    if r.status_code == 404 and short_id(server_uuid) != server_uuid:
+        # 面板路由用 8 位短 ID，完整 UUID 404 时用短 ID 重试一次
+        print("  🔁 begin 404，用短 ID 重试...")
+        try:
+            r = api_post(s, f"/api/client/servers/{short_id(server_uuid)}/renew/begin", headers)
+        except Exception as e:
+            return {"status": "error", "message": f"begin 请求失败: {e}"}
+
     if r.status_code == 419:
         return {"status": "reauth", "message": "419 CSRF 过期，需刷新 session"}
     if r.status_code == 401:
