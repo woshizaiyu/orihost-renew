@@ -41,17 +41,17 @@ orihost-renew/
 
 备选方法：`F12` → `Network（网络）` → 刷新页面 → 点任意 `activity` 请求 → `Request Headers` 里复制 `Cookie` 整段（脚本会自动从里面提取）。
 
-## 二、获取服务器 UUID
+## 二、获取服务器 ID
 
 进面板点开你的服务器，看浏览器地址栏：
 
 ```text
-https://panel.orihost.com/server/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-                                  └──────────── UUID，完整复制 ────────────┘
+https://panel.orihost.com/server/8651e616
+                                  └─ 8 位短 ID，填这个就行 ─┘
 ```
 
-多台服务器用英文逗号分隔：`uuid1,uuid2`。
-UUID 长这样（示例，填你自己的）：`670475f5-1206-48d3-b4ab-e86d75f5a3fd`，5 段十六进制（8-4-4-4-12），面板地址栏 `/server/` 后面那段原样复制。
+多台用英文逗号分隔：`id1,id2`。
+填完整 UUID（`670475f5-1206-...` 形如 8-4-4-4-12）也兼容，脚本会自动取前 8 位。
 
 ## 三、GitHub Actions 部署（推荐）
 
@@ -63,7 +63,7 @@ UUID 长这样（示例，填你自己的）：`670475f5-1206-48d3-b4ab-e86d75f5
 | 名称 | 必填 | 说明 |
 |---|---|---|
 | `ORIHOST_REMEMBER` | 是 | 第一步拿到的 remember token 值 |
-| `ORIHOST_SERVER_IDS` | 是 | 服务器 UUID，逗号分隔 |
+| `ORIHOST_SERVER_IDS` | 是 | 服务器短 ID（地址栏 `/server/` 后面那段），逗号分隔 |
 | `TG_BOT_TOKEN` | 否 | Telegram 机器人 token |
 | `TG_CHAT_ID` | 否 | Telegram 聊天 ID |
 | `NODE_LINK` | 否 | 代理节点完整分享链接（vless/vmess/trojan/hysteria2/tuic/anytls/socks5），不填则直连 |
@@ -90,14 +90,14 @@ UUID 长这样（示例，填你自己的）：`670475f5-1206-48d3-b4ab-e86d75f5
 ```bat
 pip install -r requirements.txt
 set ORIHOST_REMEMBER=你的remember值
-set ORIHOST_SERVER_IDS=你的服务器UUID
+set ORIHOST_SERVER_IDS=你的服务器短ID
 python orihost_renew.py
 ```
 
 多台 / TG / 代理（cmd 示例）：
 
 ```bat
-set ORIHOST_SERVER_IDS=uuid1,uuid2
+set ORIHOST_SERVER_IDS=id1,id2
 set TG_BOT_TOKEN=123:abc
 set TG_CHAT_ID=123456789
 set ORIHOST_PROXY=http://127.0.0.1:7890
