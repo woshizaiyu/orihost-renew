@@ -1,0 +1,83 @@
+name: Orihost Auto Renew
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 10 */3 * *' # 每 3 天一次（北京时间 18:00），7 天有效期提前续，不要改成 7 天
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  Renew-Orihost:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: ⚙ 设置 Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: 🛠️ 安装系统依赖和 Python 依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          pip install playwright requests 'requests[socks]'
+          python -m playwright install --with-deps chrome
+
+      - name: ⚙ 设置代理 (sing-box)
+        continue-on-error: true
+        env:
+          NODE_LINK: ${{ secrets.NODE_LINK }}
+        run: |
+          bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
+
+      - name: 🚀 运行续期脚本
+        env:
+          ORIHOST_REMEMBER: ${{ secrets.ORIHOST_REMEMBER }}
+          ORIHOST_SERVER_IDS: ${{ secrets.ORIHOST_SERVER_IDS }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          ORIHOST_PROXY: ${{ secrets.ORIHOST_PROXY }}
+          ARTICLE_WAIT: '30'
+          CLAIM_TIMEOUT: '150'
+          IS_PROXY: ${{ env.IS_PROXY }}
+          PROXY_SERVER: ${{ env.PROXY_SERVER }}
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python3 app.py
+
+      - name: 📸 上传截图（成功/失败都保留）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: orihost-shots
+          path: '*.png'
+          if-no-files-found: ignore
+
+      - name: 🧽 清理进程和临时文件
+        if: always()
+        run: |
+          pkill -f sing-box || true
+          pkill -f chromedriver || true
+          pkill -f chrome || true
+          pkill -f Xvfb || true
+          rm -f sing-box sing-box-config.json sing-box.log
+
+      - name: 🧹 清理旧的工作流运行记录
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          runs=$(gh run list --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId')
+          count=0
+          for run_id in $runs; do
+            count=$((count + 1))
+            if [ $count -gt 1 ]; then
+              echo "删除运行记录: $run_id"
+              gh run delete $run_id || true
+            fi
+          done
