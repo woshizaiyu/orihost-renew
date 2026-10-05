@@ -3,7 +3,10 @@
 # Orihost 浏览器自动续期（SeleniumBase + 真浏览器）
 # 背景：面板 claim 接口强制要求 Cloudflare Turnstile token（GET /api/client/renewal/complete?cf-turnstile-response=xxx），
 #       纯 HTTP 调不通（无 token 直接 500），必须用真浏览器点验证。
-# 流程：Cookie 免登 → 服务器页 → Renew Now → Read Article（新标签读文章）→ 倒计时 → 点 Turnstile → Claim Renewal
+# 流程：Cookie 免登 → 服务器页 → Renew Now → Read Article（新标签读文章，
+#       面板倒计时，文章页保持打开）→ Thanks-for-reading → 点 Turnstile 复选框
+#       → Token 出来后点 Claim Renewal → 页面文案 + API 双重确认
+# 证据：.tmp/orihost-20261005-121149 录制截图（S000009/S000015/S000016/S000020）
 # 参考：katabump-renew-main（同款 Turnstile 处理 + xvfb 无头方案）
 
 import os
@@ -263,6 +266,43 @@ _HAS_TURNSTILE_JS = """
 """
 
 
+def click_turnstile_checkbox(sb) -> bool:
+    """真鼠标点 Turnstile 复选框（截图实证：弹窗内是交互式 checkbox，
+    不点它 token 永远出不来，之前 handle_turnstile 只等不点就是卡死根因）。
+    widget 宽 300 高 65，复选框在左侧 → 点 iframe 中心偏左。"""
+    try:
+        from selenium.webdriver.common.action_chains import ActionChains
+    except Exception as e:
+        print(f"  ⚠️ ActionChains 不可用: {e}")
+        return False
+    try:
+        frames = sb.find_elements('iframe[src*="challenges.cloudflare.com"]')
+    except Exception:
+        frames = []
+    for fr in frames:
+        try:
+            if not fr.is_displayed():
+                continue
+            sb.execute_script("arguments[0].scrollIntoView({block:'center'});", fr)
+            time.sleep(0.8)
+            ActionChains(sb.driver).move_to_element_with_offset(fr, -110, 0).click().perform()
+            print("  🖱️ 已点 Turnstile 复选框")
+            return True
+        except Exception:
+            continue
+    # 兜底：直接点 .cf-turnstile 容器中心
+    try:
+        box = sb.find_element(".cf-turnstile")
+        sb.execute_script("arguments[0].scrollIntoView({block:'center'});", box)
+        time.sleep(0.8)
+        ActionChains(sb.driver).move_to_element(box).click().perform()
+        print("  🖱️ 已点 Turnstile 容器")
+        return True
+    except Exception as e:
+        print(f"  ⚠️ 点复选框失败: {str(e)[:100]}")
+        return False
+
+
 def handle_turnstile(sb) -> bool:
     print("🔍 处理 Cloudflare Turnstile 验证...")
     time.sleep(2)
@@ -272,34 +312,36 @@ def handle_turnstile(sb) -> bool:
             return True
     except Exception:
         pass
-    for _ in range(3):
-        try:
-            sb.execute_script(_EXPAND_JS)
-        except Exception:
-            pass
-        time.sleep(0.5)
-    for attempt in range(6):
-        try:
-            if sb.execute_script(_SOLVED_JS):
-                print(f"✅ Turnstile 通过（第 {attempt} 次尝试）")
-                return True
-        except Exception:
-            pass
-        print(f"🖱️ 第 {attempt + 1} 次调用 uc_gui_click_captcha...")
-        try:
-            sb.uc_gui_click_captcha()
-        except Exception as e:
-            print(f"⚠️ uc_gui_click_captcha 调用异常: {e}")
-        for _ in range(16):
-            time.sleep(0.5)
+    try:
+        sb.execute_script(_EXPAND_JS)
+    except Exception:
+        pass
+    for attempt in range(3):
+        click_turnstile_checkbox(sb)
+        for _ in range(40):  # 点完等 token，最长 ~40s（含转圈验证时间）
+            time.sleep(1)
             try:
                 if sb.execute_script(_SOLVED_JS):
-                    print(f"✅ Turnstile 通过（第 {attempt + 1} 次尝试）")
+                    print(f"✅ Turnstile 通过（第 {attempt + 1} 次点击）")
                     return True
             except Exception:
                 pass
-        print(f"⚠️ 第 {attempt + 1} 次未通过，重试...")
-    print("  ❌ Turnstile 6 次均失败")
+        print(f"⚠️ 第 {attempt + 1} 次点击未出 token，重试...")
+    # 最后兜底：uc_gui_click_captcha（katabump 同款）
+    print("🖱️ 兜底调用 uc_gui_click_captcha...")
+    try:
+        sb.uc_gui_click_captcha()
+    except Exception as e:
+        print(f"⚠️ uc_gui_click_captcha 调用异常: {e}")
+    for _ in range(20):
+        time.sleep(1)
+        try:
+            if sb.execute_script(_SOLVED_JS):
+                print("✅ Turnstile 通过（uc 兜底）")
+                return True
+        except Exception:
+            pass
+    print("  ❌ Turnstile 未通过")
     return False
 
 
@@ -420,6 +462,31 @@ def dismiss_overlays(sb):
             time.sleep(1)
         except Exception:
             continue
+
+
+def try_passthrough_shortlink(sb):
+    """cuty.io/cuttty 系短链穿透（best-effort）：点 Continue/Proceed 走到正文。
+    直链文章页（albeu.com 等）无按钮则直接返回。调用前需已切到文章标签。"""
+    try:
+        url = (sb.get_current_url() or "").lower()
+    except Exception:
+        return
+    if not any(d in url for d in ("cuty.io", "cuttty", "cutt", "short", "linkvertise", "ouo.io")):
+        return
+    print(f"  🔗 短链页，尝试穿透: {url[:60]}")
+    for _ in range(3):
+        btn = find_button_by_text(sb, "continue", "proceed", "click here to continue",
+                                  "继续", "前往", "下一步", "get link", timeout=8)
+        if btn is None:
+            break
+        try:
+            btn.click()
+        except Exception:
+            try:
+                sb.execute_script("arguments[0].click();", btn)
+            except Exception:
+                break
+        time.sleep(4)
 
 
 # ---------- Cookie 免登 ----------
@@ -621,8 +688,11 @@ def renew_one_server(sb, server_uuid: str, precheck=None) -> dict:
         print(f"  📰 文章页已打开，切回面板等倒计时 {ARTICLE_WAIT}s（文章页保持打开，提前关会被警告）...")
         panel_handle = list(before)[0]
         sb.driver.switch_to.window(panel_handle)
-        # 倒计时在面板页跑：每 2s 清一次广告/cookie 遮挡，文章标签页全程不关
+        # 倒计时在面板页跑：每 2s 清一次广告/cookie 遮挡，文章标签页全程不关；
+        # 中途去文章页看两次（短链就地穿透 + 滚一屏装作阅读），每次看完立刻切回面板
         dwell_end = time.time() + ARTICLE_WAIT
+        dwell_start = time.time()
+        peeked = 0
         while time.time() < dwell_end:
             try:
                 remove_ads(sb)
@@ -632,6 +702,26 @@ def renew_one_server(sb, server_uuid: str, precheck=None) -> dict:
                 dismiss_overlays(sb)
             except Exception:
                 pass
+            elapsed = time.time() - dwell_start
+            if peeked < 2 and elapsed > 5 + peeked * 10:
+                try:
+                    sb.driver.switch_to.window(article_handle)
+                    try:
+                        try_passthrough_shortlink(sb)
+                    except Exception:
+                        pass
+                    try:
+                        sb.execute_script("window.scrollBy(0, 600);")
+                    except Exception:
+                        pass
+                    time.sleep(3)
+                    peeked += 1
+                except Exception:
+                    pass
+                try:
+                    sb.driver.switch_to.window(panel_handle)
+                except Exception:
+                    pass
             time.sleep(2)
         print("  ⏱ 倒计时结束，关闭文章页...")
         try:
@@ -642,18 +732,17 @@ def renew_one_server(sb, server_uuid: str, precheck=None) -> dict:
         sb.driver.switch_to.window(panel_handle)
         time.sleep(4)
 
-    # 3. 等倒计时走完（Claim 按钮出现，兼容翻译后的中文文案）
+    # 3. 等倒计时走完（Claim 按钮出现 = 弹窗变为 Thanks-for-reading 状态）
+    # 截图实证：dwell 满足后弹窗文案变为 "Thanks for reading! Click Claim Renewal..."，
+    # 同时 Turnstile 复选框渲染在弹窗内。Claim 灰色是常态，亮的前提是先点复选框。
     print("  ⏳ 等倒计时走完，找 Claim Renewal...")
     claim_btn = find_button_by_text(sb, "claim renewal", "claim", "认领", "领取", timeout=120)
     if claim_btn is None:
         sb.save_screenshot(f"no_claim_btn_{sid}.png")
         return {"status": "❌ 续期失败", "message": "120s 没等到 Claim Renewal（倒计时异常）"}
 
-    # 4. 等 Turnstile 出现（倒计时走完后才弹出）
-    # 参考 eooce/katabump-renew：widget 常被父容器 overflow:hidden 裁剪，
-    # 等待轮询中必须同步做 _EXPAND_JS，否则 _HAS_TURNSTILE_JS 一直 false
-    #（本次 CI 日志就是“未检测到验证组件”→ Claim 永久 disabled）。
-    # 另见 .tmp/out/apilog.jsonl：begin 返回 dwell_seconds=15，倒计时走完才出验证。
+    # 4. 点 Turnstile 复选框（必须！不点 token 出不来，Claim 点了也白点）
+    # widget 在 Thanks-for-reading 后才渲染；60s 还没出现就先往下走（点后按需补）。
     print("  ⏳ 等 Turnstile 验证出现...")
     has_ts = False
     for i in range(60):
@@ -673,11 +762,9 @@ def renew_one_server(sb, server_uuid: str, precheck=None) -> dict:
     if has_ts:
         if not handle_turnstile(sb):
             sb.save_screenshot(f"turnstile_fail_{sid}.png")
-            return {"status": "❌ 续期失败", "message": "Turnstile 验证 6 次未通过"}
+            return {"status": "❌ 续期失败", "message": "Turnstile 验证未通过（复选框点了 3 次没出 token）"}
     else:
-        # 没见到 widget 就不调 uc_gui_click_captcha（无目标只会空转 6 次）；
-        # 走“先点 Claim，验证码按需出现”的 XCQ 式流程，下一步处理。
-        print("  ℹ️ 未检测到验证组件，跳过预过盾（点 Claim 后按需验证）...")
+        print("  ℹ️ 未检测到验证组件，先点 Claim（验证码按需出现，下一步补过盾）...")
 
     # 5. 点 Claim Renewal（用 JS 点击避免被遮挡）
     # 参考 XCQ0607/katabump + oyz/FreezeHost，叠加本次实战修正：
@@ -691,7 +778,6 @@ def renew_one_server(sb, server_uuid: str, precheck=None) -> dict:
     #    （上次误报根源：is_enabled 恒真 + page_source 含 JS 常驻词）。
     print("  🖱️ 点 Claim Renewal...")
     claimed = False
-    cooldown_hint = ""
     deadline = time.time() + max(CLAIM_TIMEOUT, 60)
     while time.time() < deadline:
         try:
@@ -770,21 +856,12 @@ def renew_one_server(sb, server_uuid: str, precheck=None) -> dict:
             except Exception:
                 pass
             continue
-        # 弹窗还在 + 出现 "renewal in" 提示 → 大概率未到可续期时间，记下行文
-        if "renewal in" in src_now:
-            try:
-                for line in src_now.splitlines():
-                    if "renewal in" in line:
-                        cooldown_hint = line.strip()[:80]
-                        break
-            except Exception:
-                pass
+        # 注意："Current renewal in: 14 days" 这行字在 Thanks-for-reading 状态下也常驻
+        # （录制截图实证），绝不能拿它当跳过信号；走完全流程，让 API 做最终裁判。
         time.sleep(2)
     if not claimed:
         sb.save_screenshot(f"claim_disabled_{sid}.png")
-        if cooldown_hint:
-            return {"status": "⏭️ 跳过", "message": f"Claim 一直不可点，可能未到续期时间（{cooldown_hint}），已等{max(CLAIM_TIMEOUT, 60)}s"}
-        return {"status": "❌ 续期失败", "message": f"Claim 按钮一直不可点（倒计时/验证没完成，已等{max(CLAIM_TIMEOUT, 60)}s）"}
+        return {"status": "❌ 续期失败", "message": f"Claim 点了但没出现成功确认（已等{max(CLAIM_TIMEOUT, 60)}s，请看截图人工确认）"}
     time.sleep(8)
 
     # 6. 读结果：可见文案 + API 双重确认，API 是最终裁判
