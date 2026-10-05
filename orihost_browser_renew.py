@@ -348,15 +348,18 @@ def handle_turnstile(sb) -> bool:
 # ---------- 广告拦截（CI 环境广告 iframe 可能遮挡按钮） ----------
 _REMOVE_ADS_JS = """
 (function() {
-    // 移除广告 iframe
+    // 移除广告 iframe：关键词命中，或跨域且不在白名单（面板自身/验证/谷歌除外）。
+    // 广告域名天天换，关键词列不完；面板正常只需要同源 + Turnstile iframe。
+    var allow = ['challenges.cloudflare.com', 'panel.orihost.com', 'orihost.com',
+                 'www.google.com', 'www.gstatic.com', 'recaptcha'];
     document.querySelectorAll('iframe').forEach(function(f) {
         var src = f.src || '';
-        if (src.includes('n6wxm.com') || src.includes('nap5k.com') || 
-            src.includes('5gvci.com') || src.includes('jhnwr.com') ||
-            src.includes('my.rtmark.net') || src.includes('vignette') ||
-            src.includes('tag.min.js') || src.includes('ad') ||
-            src.includes('advert') || src.includes('popup') ||
-            src.includes('overlay') || src.includes('modal')) {
+        if (!src) return;
+        if (src.includes('challenges.cloudflare.com')) return;  // 验证框，绝不能动
+        var bad = /n6wxm|nap5k|5gvci|jhnwr|rtmark|vignette|tag\.min\.js|\bad\b|advert|popup|overlay|modal/i.test(src);
+        var sameOrigin = src.indexOf(location.origin) === 0 || src.charAt(0) === '/';
+        var allowed = allow.some(function(a){ return src.includes(a); });
+        if (bad || (!sameOrigin && !allowed)) {
             f.remove();
         }
     });
@@ -449,33 +452,84 @@ def page_text(sb) -> str:
         return ""
 
 
+_RENEWAL_MODAL_JS = """
+(function(){
+  // 续期弹窗 = 同时含两处文案的最小 div（body 也含这些词，必须取最小的）
+  var best = null;
+  document.querySelectorAll('div').forEach(function(el){
+    var t = el.innerText || '';
+    if (t.includes('Renew your server') && t.includes('Claim Renewal')) {
+      if (!best || t.length < (best.innerText || '').length) best = el;
+    }
+  });
+  return best;
+})()
+"""
+
+
 def dismiss_overlays(sb):
-    """关 cookie 横幅（Got it）与广告弹窗（Close），绝不碰续期弹窗本身。
-    截图实证：面板上有 'Download is ready / Tap to proceed' 广告盖住 Claim，
-    底部有 'We use cookies ... Got it' 横幅。续期弹窗内只有 Cancel/Claim/×，
-    没有 Close/Got it 文案；Close 额外做祖先保护（弹窗内则跳过）。"""
+    """关 cookie 横幅（Got it）与广告弹窗（Close/×），绝不碰续期弹窗本身。
+    截图实证：'Download is ready / Tap to proceed' 广告（带 Ad 角标，常驻中央盖住
+    验证框）+ 底部 'We use cookies ... Got it' 横幅。
+    血泪教训：旧版用 xpath ancestor::* 判“弹窗内则跳过”——body 也是祖先且全页
+    文案都含 Claim Renewal，结果全页面的 Close/Got it 一个都没点过。
+    新版：先定位续期弹窗最小 div，只跳过它内部的按钮；广告常在跨域 iframe 里，
+    top-document 够不着，所以每个非验证 iframe 里再扫一遍（iframe 里不可能有
+    续期弹窗，× 也可以点）。"""
     try:
-        btns = sb.find_elements("button")
+        modal = sb.execute_script(_RENEWAL_MODAL_JS)
     except Exception:
-        return
-    for el in btns:
+        modal = None
+
+    def inside_modal(el) -> bool:
+        if modal is None:
+            return False
         try:
-            if not el.is_displayed():
-                continue
-            txt = (el.text or "").strip()
-            if txt not in ("Close", "Got it", "关闭", "知道了"):
-                continue
-            if txt in ("Close", "关闭"):
-                try:
-                    el.find_element("xpath", "./ancestor::*[contains(., 'Claim Renewal') or contains(., 'Renew your server')]")
-                    continue  # 在续期弹窗内部，不碰
-                except Exception:
-                    pass
-            el.click()
-            print(f"  🚫 关闭遮挡弹窗: {txt}")
-            time.sleep(1)
+            return bool(sb.execute_script(
+                "return arguments[0] === arguments[1] || arguments[0].contains(arguments[1]);",
+                modal, el))
         except Exception:
-            continue
+            return False
+
+    def sweep(allow_x: bool):
+        try:
+            btns = sb.find_elements("button")
+        except Exception:
+            return
+        for el in btns:
+            try:
+                if not el.is_displayed():
+                    continue
+                txt = (el.text or "").strip()
+                if txt not in ("Close", "Got it", "关闭", "知道了") and not (allow_x and txt in ("×", "✕", "x", "X")):
+                    continue
+                if not allow_x and inside_modal(el):
+                    continue  # 续期弹窗内部，不碰
+                el.click()
+                print(f"  🚫 关闭遮挡弹窗: {txt or '×'}")
+                time.sleep(1)
+            except Exception:
+                continue
+
+    sweep(allow_x=False)  # 主文档：不动 ×（续期弹窗自己的 × 就是 ×）
+    # 广告 iframe 里再扫（Turnstile 的 challenges  iframe 除外）
+    try:
+        frames = sb.execute_script(
+            "return Array.from(document.querySelectorAll('iframe'))"
+            ".filter(f => f.src && !f.src.includes('challenges.cloudflare.com'));")
+    except Exception:
+        frames = []
+    for fr in frames or []:
+        try:
+            sb.driver.switch_to.frame(fr)
+            sweep(allow_x=True)
+        except Exception:
+            pass
+        finally:
+            try:
+                sb.driver.switch_to.default_content()
+            except Exception:
+                pass
 
 
 def try_passthrough_shortlink(sb):
