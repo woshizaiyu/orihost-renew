@@ -38,10 +38,10 @@ SERVER_URL = f"{BASE_URL}/server/{SERVER_SHORT_ID}"
 API_COOLDOWN = f"{BASE_URL}/api/client/servers/{SERVER_UUID}/renew/cooldown"
 API_BEGIN = f"{BASE_URL}/api/client/servers/{SERVER_UUID}/renew/begin"
 
-# 文章页停留秒数（begin 返回 dwell_seconds=15，留余量默认 30，可用环境变量覆盖）
-ARTICLE_WAIT = int(os.environ.get('ARTICLE_WAIT') or "30")
-# Claim 阶段总超时秒数
-CLAIM_TIMEOUT = int(os.environ.get('CLAIM_TIMEOUT') or "150")
+# 文章页停留秒数（begin 返回 dwell_seconds=15，默认 15，可用环境变量覆盖）
+ARTICLE_WAIT = int(os.environ.get('ARTICLE_WAIT') or "15")
+# Claim 阶段总超时秒数（轮询总时长）
+CLAIM_TIMEOUT = int(os.environ.get('CLAIM_TIMEOUT') or "60")
 
 # --- 代理配置（由工作流 sing-box 步骤写入 $GITHUB_ENV，本地可用 ORIHOST_PROXY）---
 _MANUAL_PROXY = os.environ.get('ORIHOST_PROXY') or os.environ.get('ORIHOST_GOST_PROXY') or ""
@@ -134,29 +134,69 @@ def send_telegram_notification(status, old_due, new_due):
 
 def handle_cloudflare(page, timeout=90):
     """处理 Cloudflare Turnstile 验证（复用 Hiden 骨架写法）
-    timeout：本轮最多等待秒数；轮询中请传小值（如 15），避免一轮卡死"""
+    timeout：本轮最多等待秒数；轮询中请传小值（如 15），避免一轮卡死
+    策略：iframe 内 checkbox 点 → 不行就 force 点 iframe 中心；每轮都带 token 检查"""
     iframe_selector = 'iframe[src*="challenges.cloudflare.com"]'
     if page.locator(iframe_selector).count() == 0:
         return True
-    log("⚠️ 检测到 Cloudflare 验证...")
+    log(f"⚠️ 检测到 Cloudflare 验证（共 {page.locator(iframe_selector).count()} 个验证框）...")
     start_time = time.time()
     while time.time() - start_time < timeout:
         if page.locator(iframe_selector).count() == 0:
             log("✅ Cloudflare 验证通过！")
             return True
+        # token 已有则直接过
+        try:
+            token = page.evaluate(
+                '() => document.querySelector("[name=cf-turnstile-response]")?.value || ""'
+            )
+            if token and len(token) > 20:
+                log("✅ Turnstile token 已生成")
+                return True
+        except Exception:
+            pass
+        # 策略1：iframe 内 checkbox 点击
+        clicked = False
         try:
             frame = page.frame_locator(iframe_selector)
             checkbox = frame.locator('input[type="checkbox"]')
-            if checkbox.count() > 0 and checkbox.first.is_visible():
-                log("🖱️ 点击验证复选框...")
-                time.sleep(random.uniform(0.5, 1.5))
-                checkbox.first.click()
-                log("⏳ 已点击，等待验证结果...")
-                time.sleep(5)
-            else:
-                time.sleep(1)
+            if checkbox.count() > 0:
+                try:
+                    if checkbox.first.is_visible(timeout=3000):
+                        log("🖱️ 点击验证复选框...")
+                        try:
+                            checkbox.first.click(timeout=5000)
+                        except Exception:
+                            checkbox.first.click(force=True, timeout=5000)
+                        clicked = True
+                except Exception as e:
+                    log(f"⚠️ 复选框点击失败，换 force 策略: {str(e)[:120]}")
         except Exception:
             pass
+        # 策略2：直接 force 点 iframe 中心
+        if not clicked:
+            try:
+                fr = page.locator(iframe_selector).first
+                if fr.is_visible(timeout=3000):
+                    log("🖱️ 直接点击验证框中心（force）...")
+                    fr.click(force=True, timeout=5000)
+                    clicked = True
+            except Exception as e:
+                log(f"⚠️ 验证框点击失败: {str(e)[:120]}")
+        if clicked:
+            time.sleep(5)
+            continue
+        time.sleep(2)
+    # 超时前最后看一次 token
+    try:
+        token = page.evaluate(
+            '() => document.querySelector("[name=cf-turnstile-response]")?.value || ""'
+        )
+        if token and len(token) > 20:
+            log("✅ Turnstile token 已生成（超时前命中）")
+            return True
+    except Exception:
+        pass
     log("❌ 验证超时。")
     return False
 
@@ -430,7 +470,7 @@ def renew_service(page):
         log("⏳ 等待倒计时结束（Thanks for reading）...")
         claimed = False
         start_wait = time.time()
-        poll_timeout = max(CLAIM_TIMEOUT, ARTICLE_WAIT + 120)
+        poll_timeout = CLAIM_TIMEOUT
         while time.time() - start_wait < poll_timeout:
             try:
                 body = page.locator("body").inner_text(timeout=5000)

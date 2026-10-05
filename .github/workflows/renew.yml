@@ -44,8 +44,8 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           ORIHOST_PROXY: ${{ secrets.ORIHOST_PROXY }}
-          ARTICLE_WAIT: '30'
-          CLAIM_TIMEOUT: '150'
+          ARTICLE_WAIT: '15'
+          CLAIM_TIMEOUT: '60'
           IS_PROXY: ${{ env.IS_PROXY }}
           PROXY_SERVER: ${{ env.PROXY_SERVER }}
         run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python3 app.py
