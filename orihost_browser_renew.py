@@ -269,38 +269,91 @@ _HAS_TURNSTILE_JS = """
 def click_turnstile_checkbox(sb) -> bool:
     """真鼠标点 Turnstile 复选框（截图实证：弹窗内是交互式 checkbox，
     不点它 token 永远出不来，之前 handle_turnstile 只等不点就是卡死根因）。
-    widget 宽 300 高 65，复选框在左侧 → 点 iframe 中心偏左。"""
+    widget 宽 300 高 65，复选框在左侧 → 点 iframe 中心偏左。
+    点之前先用 elementFromPoint 验遮挡：广告（Download is ready）经常正好盖住
+    验证框，盲点会点到广告的 Continue 上开出垃圾新标签——先清，实在清不掉就
+    如实返回 False 让上层重试/报错，不硬点。"""
     try:
         from selenium.webdriver.common.action_chains import ActionChains
     except Exception as e:
         print(f"  ⚠️ ActionChains 不可用: {e}")
         return False
+
+    def _point_clear(x, y) -> bool:
+        try:
+            info = sb.execute_script(
+                "var el = document.elementFromPoint(arguments[0], arguments[1]);"
+                "if (!el) return 'none';"
+                "if (el.tagName === 'IFRAME' && el.src && el.src.includes('challenges.cloudflare.com')) return 'ts-iframe';"
+                "if (el.closest && el.closest('.cf-turnstile')) return 'ts-box';"
+                "var t = ((el.textContent || '').trim().slice(0, 30));"
+                "return (el.tagName || '?') + ':' + t;", x, y)
+        except Exception:
+            return 'unknown'
+        return info in ('ts-iframe', 'ts-box')
+
+    def _real_click(el, dx: int, dy: int, label: str) -> bool:
+        try:
+            if not el.is_displayed():
+                return False
+            sb.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+            time.sleep(0.8)
+            r = sb.execute_script(
+                "var r = arguments[0].getBoundingClientRect();"
+                "return [r.left, r.top, r.width, r.height];", el)
+            if not r or r[2] < 2 or r[3] < 2:
+                return False
+            x, y = r[0] + r[2] / 2 + dx, r[1] + r[3] / 2 + dy
+            if not _point_clear(x, y):
+                print("  ⚠️ 复选框被遮挡，先清广告再点...")
+                try:
+                    remove_ads(sb)
+                except Exception:
+                    pass
+                try:
+                    dismiss_overlays(sb)
+                except Exception:
+                    pass
+                time.sleep(1)
+                if not _point_clear(x, y):
+                    print("  ⚠️ 遮挡还在，不硬点（避免点到广告 Continue）")
+                    return False
+            before = set(sb.driver.window_handles)
+            ActionChains(sb.driver).move_to_element_with_offset(el, dx, dy).click().perform()
+            time.sleep(1)
+            # 误点到广告 Continue 会开新标签：关掉，切回来
+            try:
+                after = set(sb.driver.window_handles)
+                for h in after - before:
+                    try:
+                        sb.driver.switch_to.window(h)
+                        sb.driver.close()
+                        print("  🚫 关掉误点开的新标签")
+                    except Exception:
+                        pass
+                sb.driver.switch_to.window(list(before)[0])
+            except Exception:
+                pass
+            print(f"  🖱️ 已点 {label}")
+            return True
+        except Exception:
+            return False
+
     try:
         frames = sb.find_elements('iframe[src*="challenges.cloudflare.com"]')
     except Exception:
         frames = []
     for fr in frames:
-        try:
-            if not fr.is_displayed():
-                continue
-            sb.execute_script("arguments[0].scrollIntoView({block:'center'});", fr)
-            time.sleep(0.8)
-            ActionChains(sb.driver).move_to_element_with_offset(fr, -110, 0).click().perform()
-            print("  🖱️ 已点 Turnstile 复选框")
+        if _real_click(fr, -110, 0, "Turnstile 复选框"):
             return True
-        except Exception:
-            continue
     # 兜底：直接点 .cf-turnstile 容器中心
     try:
         box = sb.find_element(".cf-turnstile")
-        sb.execute_script("arguments[0].scrollIntoView({block:'center'});", box)
-        time.sleep(0.8)
-        ActionChains(sb.driver).move_to_element(box).click().perform()
-        print("  🖱️ 已点 Turnstile 容器")
-        return True
+        if _real_click(box, 0, 0, "Turnstile 容器"):
+            return True
     except Exception as e:
         print(f"  ⚠️ 点复选框失败: {str(e)[:100]}")
-        return False
+    return False
 
 
 def handle_turnstile(sb) -> bool:
@@ -317,6 +370,14 @@ def handle_turnstile(sb) -> bool:
     except Exception:
         pass
     for attempt in range(3):
+        try:
+            remove_ads(sb)
+        except Exception:
+            pass
+        try:
+            dismiss_overlays(sb)
+        except Exception:
+            pass
         click_turnstile_checkbox(sb)
         for _ in range(40):  # 点完等 token，最长 ~40s（含转圈验证时间）
             time.sleep(1)
@@ -492,8 +553,10 @@ def dismiss_overlays(sb):
             return False
 
     def sweep(allow_x: bool):
+        # 广告的关闭控件经常是 span（如 <span>要關閉</span>，还带 6s 动画，
+        # 前 6s 点不了——扫 button+span，精确文本匹配，扫到点不了就下一轮再点。
         try:
-            btns = sb.find_elements("button")
+            btns = sb.find_elements("button") + sb.find_elements("span")
         except Exception:
             return
         for el in btns:
@@ -501,7 +564,7 @@ def dismiss_overlays(sb):
                 if not el.is_displayed():
                     continue
                 txt = (el.text or "").strip()
-                if txt not in ("Close", "Got it", "关闭", "知道了") and not (allow_x and txt in ("×", "✕", "x", "X")):
+                if txt not in ("Close", "Got it", "关闭", "知道了", "要關閉", "關閉") and not (allow_x and txt in ("×", "✕", "x", "X")):
                     continue
                 if not allow_x and inside_modal(el):
                     continue  # 续期弹窗内部，不碰
@@ -833,6 +896,16 @@ def renew_one_server(sb, server_uuid: str, precheck=None) -> dict:
     print("  ⏳ 等 Turnstile 验证出现...")
     has_ts = False
     for i in range(60):
+        # 等待期间广告不定时冒出来（Download is ready 会盖住验证框），顺手清掉
+        if i % 3 == 0:
+            try:
+                remove_ads(sb)
+            except Exception:
+                pass
+            try:
+                dismiss_overlays(sb)
+            except Exception:
+                pass
         try:
             try:
                 sb.execute_script(_EXPAND_JS)
