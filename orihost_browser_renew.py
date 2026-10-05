@@ -360,12 +360,17 @@ _REMOVE_ADS_JS = """
             f.remove();
         }
     });
-    // 移除固定定位的广告覆盖层
+    // 移除固定定位的广告覆盖层（续期弹窗除外：它含 Turnstile iframe，
+    // 不能按 "innerHTML 含 iframe" 误删；认准 Renew/Claim/Thanks 字样就跳过）
     document.querySelectorAll('div').forEach(function(d) {
         var s = window.getComputedStyle(d);
         if ((s.position === 'fixed' || s.position === 'absolute') && 
             s.zIndex > 100 && d.offsetHeight > 100) {
             var text = d.innerText || '';
+            if (text.includes('Renew your server') || text.includes('Claim Renewal') ||
+                text.includes('Thanks for reading') || text.includes('Read Article')) {
+                return;
+            }
             if (text.includes('ad') || text.includes('广告') || 
                 text.includes('close') || text.includes('关闭') ||
                 text.includes('✕') || text.includes('×') ||
@@ -399,13 +404,22 @@ def remove_ads(sb):
 
 
 # ---------- 页面工具（文本匹配按钮，面板是 React，文本最稳） ----------
-def find_button_by_text(sb, *keywords, timeout=10):
-    """在 button、a、div 里找文本包含关键词的第一个可见元素"""
+def find_button_by_text(sb, *keywords, timeout=10, tags=("button", "a", "div")):
+    """在指定标签里找文本包含关键词的第一个可见元素。
+    血泪教训：找 Claim/Read 这类词必须只查 button/a——弹窗描述文案 div 里
+    就有 "to claim your renewal" / "Click Read Article"，查 div 必误匹配，
+    导致没流转到 Thanks-for-reading 就往下走、干等验证组件。"""
     end = time.time() + timeout
     kws = [k.lower() for k in keywords]
     while time.time() < end:
         try:
-            for el in sb.find_elements("button") + sb.find_elements("a") + sb.find_elements("div"):
+            els = []
+            for tag in tags:
+                try:
+                    els += sb.find_elements(tag)
+                except Exception:
+                    pass
+            for el in els:
                 try:
                     if not el.is_displayed():
                         continue
@@ -643,11 +657,11 @@ def renew_one_server(sb, server_uuid: str, precheck=None) -> dict:
     if "expired renewal" in src or "suspended due" in src:
         print("  ⚠️ 服务器因过期被暂停，走续期流程恢复")
 
-    # 1. 点 Renew Now（兼容 Google 翻译后的中文文案）
+    # 1. 点 Renew Now（只查 button/a；兼容 Google 翻译后的中文文案）
     print("  🔍 找 Renew Now 按钮...")
     remove_ads(sb)
     time.sleep(1)
-    renew_btn = find_button_by_text(sb, "renew now", "renew", "更新", "续期", timeout=20)
+    renew_btn = find_button_by_text(sb, "renew now", "renew", "更新", "续期", timeout=20, tags=("button", "a"))
     if renew_btn is None:
         sb.save_screenshot(f"no_renew_btn_{sid}.png")
         try:
@@ -662,9 +676,11 @@ def renew_one_server(sb, server_uuid: str, precheck=None) -> dict:
         sb.execute_script("arguments[0].click();", renew_btn)
     time.sleep(4)
 
-    # 2. 点 Read Article（会弹新标签，兼容翻译后的中文文案）
+    # 2. 点 Read Article（会弹新标签，只查 button/a；兼容翻译后的中文文案）
     print("  🖱️ 点 Read Article...")
-    read_btn = find_button_by_text(sb, "read article", "read", "阅读文章", "阅读", timeout=15)
+    article_handle = None
+    panel_handle = None
+    read_btn = find_button_by_text(sb, "read article", "read", "阅读文章", "阅读", timeout=15, tags=("button", "a"))
     if read_btn is None:
         # 可能已经在 reading 状态（倒计时中），直接往下走
         print("  ℹ️ 没找到 Read Article，可能已在倒计时，直接等待")
@@ -723,23 +739,40 @@ def renew_one_server(sb, server_uuid: str, precheck=None) -> dict:
                 except Exception:
                     pass
             time.sleep(2)
-        print("  ⏱ 倒计时结束，关闭文章页...")
+        print("  ⏱ 倒计时结束，文章页先不关（弹窗要求 Keep it open，提前关不流转）...")
         try:
-            sb.driver.switch_to.window(article_handle)
-            sb.driver.close()
+            sb.driver.switch_to.window(panel_handle)
         except Exception:
             pass
-        sb.driver.switch_to.window(panel_handle)
         time.sleep(4)
 
-    # 3. 等倒计时走完（Claim 按钮出现 = 弹窗变为 Thanks-for-reading 状态）
+    # 3. 等弹窗流转到 Thanks-for-reading（双信号：文案 + 真 Claim 按钮，只查 button/a）
     # 截图实证：dwell 满足后弹窗文案变为 "Thanks for reading! Click Claim Renewal..."，
     # 同时 Turnstile 复选框渲染在弹窗内。Claim 灰色是常态，亮的前提是先点复选框。
     print("  ⏳ 等倒计时走完，找 Claim Renewal...")
-    claim_btn = find_button_by_text(sb, "claim renewal", "claim", "认领", "领取", timeout=120)
+    claim_btn = None
+    thanks_seen = False
+    end3 = time.time() + 120
+    while time.time() < end3:
+        try:
+            if "thanks for reading" in page_text(sb):
+                thanks_seen = True
+                break
+        except Exception:
+            pass
+        time.sleep(2)
+    if thanks_seen:
+        print("  ✅ 弹窗已流转（Thanks for reading）")
+    else:
+        print("  ⚠️ 120s 没读到 Thanks for reading，还找一下 Claim 按钮再定...")
+    claim_btn = find_button_by_text(sb, "claim renewal", "claim", "认领", "领取", timeout=30, tags=("button", "a"))
     if claim_btn is None:
+        try:
+            sb.driver.switch_to.window(panel_handle)
+        except Exception:
+            pass
         sb.save_screenshot(f"no_claim_btn_{sid}.png")
-        return {"status": "❌ 续期失败", "message": "120s 没等到 Claim Renewal（倒计时异常）"}
+        return {"status": "❌ 续期失败", "message": "没等到 Thanks-for-reading / Claim 按钮（dwell 没满足或文章页被提前关了）"}
 
     # 4. 点 Turnstile 复选框（必须！不点 token 出不来，Claim 点了也白点）
     # widget 在 Thanks-for-reading 后才渲染；60s 还没出现就先往下走（点后按需补）。
@@ -859,6 +892,22 @@ def renew_one_server(sb, server_uuid: str, precheck=None) -> dict:
         # 注意："Current renewal in: 14 days" 这行字在 Thanks-for-reading 状态下也常驻
         # （录制截图实证），绝不能拿它当跳过信号；走完全流程，让 API 做最终裁判。
         time.sleep(2)
+    # Claim 点完（无论成败）再关文章页，dwell/流转期间它必须开着
+    print("  📰 关闭文章页...")
+    try:
+        if article_handle:
+            sb.driver.switch_to.window(article_handle)
+            sb.driver.close()
+    except Exception:
+        pass
+    try:
+        if panel_handle:
+            sb.driver.switch_to.window(panel_handle)
+        else:
+            sb.driver.switch_to.window(sb.driver.window_handles[0])
+    except Exception:
+        pass
+    time.sleep(2)
     if not claimed:
         sb.save_screenshot(f"claim_disabled_{sid}.png")
         return {"status": "❌ 续期失败", "message": f"Claim 点了但没出现成功确认（已等{max(CLAIM_TIMEOUT, 60)}s，请看截图人工确认）"}
