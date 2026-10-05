@@ -132,14 +132,15 @@ def send_telegram_notification(status, old_due, new_due):
         return False
 
 
-def handle_cloudflare(page):
-    """处理 Cloudflare Turnstile 验证（复用 Hiden 骨架写法）"""
+def handle_cloudflare(page, timeout=90):
+    """处理 Cloudflare Turnstile 验证（复用 Hiden 骨架写法）
+    timeout：本轮最多等待秒数；轮询中请传小值（如 15），避免一轮卡死"""
     iframe_selector = 'iframe[src*="challenges.cloudflare.com"]'
     if page.locator(iframe_selector).count() == 0:
         return True
     log("⚠️ 检测到 Cloudflare 验证...")
     start_time = time.time()
-    while time.time() - start_time < 90:
+    while time.time() - start_time < timeout:
         if page.locator(iframe_selector).count() == 0:
             log("✅ Cloudflare 验证通过！")
             return True
@@ -207,6 +208,22 @@ def close_center_ad(page, rounds=3):
     if closed:
         log(f"✅ 已关闭中央广告 {closed} 次")
     return closed
+
+
+def dismiss_cookie_banner(page):
+    """点掉底部 cookie 横幅（We use cookies → Got it），免得遮挡对话框"""
+    try:
+        btn = page.locator('button:has-text("Got it")')
+        for idx in range(btn.count()):
+            try:
+                if btn.nth(idx).is_visible():
+                    btn.nth(idx).click()
+                    time.sleep(1)
+                    break
+            except Exception:
+                continue
+    except Exception:
+        pass
 
 
 def login(page):
@@ -357,8 +374,25 @@ def renew_service(page):
                 with page.expect_popup(timeout=15000) as pop:
                     read_btn.click()
                 article = pop.value
-                article.wait_for_load_state("domcontentloaded", timeout=30000)
-                log(f"📖 文章页已打开: {article.url[:80]}...")
+                # popup 先是 about:blank，等它导航到真实文章页再 dwell
+                for _ in range(20):
+                    try:
+                        cur = article.url
+                    except Exception:
+                        cur = ""
+                    if cur and cur != "about:blank":
+                        break
+                    time.sleep(1)
+                try:
+                    article.wait_for_load_state("domcontentloaded", timeout=30000)
+                except Exception:
+                    pass
+                try:
+                    log(f"📖 文章页已打开: {(article.url or '')[:80]}...")
+                except Exception:
+                    log("📖 文章页已打开")
+                if (article.url or "") in ("", "about:blank"):
+                    log("⚠️ 文章页仍是空白页（begin 已在点击时触发，继续倒计时）")
                 dwell = max(ARTICLE_WAIT, 15)
                 log(f"⏳ 模拟阅读 {dwell}s...")
                 for _ in range(dwell):
@@ -390,6 +424,7 @@ def renew_service(page):
             page.goto(SERVER_URL, wait_until="domcontentloaded", timeout=60000)
         time.sleep(2)
         close_center_ad(page)
+        dismiss_cookie_banner(page)
         handle_cloudflare(page)
 
         log("⏳ 等待倒计时结束（Thanks for reading）...")
@@ -408,8 +443,13 @@ def renew_service(page):
                 page.screenshot(path="renew_limit.png")
                 return "NOT_TIME"
             if "Thanks for reading" in body or "Claim Renewal" in body:
-                # 等 Turnstile token（免验证时可能直接可点）
-                wait_turnstile_token(page, timeout=20)
+                # 广告可能挡住验证框，先清；cookie 横幅也顺手点掉
+                close_center_ad(page, rounds=1)
+                dismiss_cookie_banner(page)
+                # 盾必须主动点击才会出 token，每轮都试一次（小超时，不卡死轮询）
+                handle_cloudflare(page, timeout=15)
+                # 免验证场景可能直接可点；否则等一小会儿 token
+                wait_turnstile_token(page, timeout=10)
                 claim_btn = page.locator('button:has-text("Claim Renewal")').first
                 try:
                     if claim_btn.count() and claim_btn.is_visible() and claim_btn.is_enabled():
@@ -417,15 +457,16 @@ def renew_service(page):
                         claim_btn.click()
                         claimed = True
                         break
+                    else:
+                        log("⏳ Claim 按钮仍不可点（Turnstile 未通过），继续等待...")
                 except Exception:
                     pass
-            # 倒计时还没走完
-            m = re.search(r"claim your renewal in\s*(\d+)\s*second", body, re.IGNORECASE)
-            if m:
-                log(f"⏳ 倒计时中…{m.group(1)}s")
+            else:
+                # 倒计时还没走完
+                m = re.search(r"claim your renewal in\s*(\d+)\s*second", body, re.IGNORECASE)
+                if m:
+                    log(f"⏳ 倒计时中…{m.group(1)}s")
             time.sleep(5)
-            # 广告可能重新弹出来挡住按钮
-            close_center_ad(page, rounds=1)
 
         if not claimed:
             log("❌ 超时未点到 Claim Renewal")
