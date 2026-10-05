@@ -132,6 +132,55 @@ def send_telegram_notification(status, old_due, new_due):
         return False
 
 
+def human_mouse_click(page, locator, timeout=8000):
+    """真鼠标轨迹点击：先随意晃两下（造移动历史），再分两段逼近目标，
+    带抖动和停顿，最后落点。Turnstile 看鼠标移动生物特征，合成 click 无轨迹易被判机器人。"""
+    try:
+        box = locator.bounding_box(timeout=timeout)
+    except Exception:
+        return False
+    if not box:
+        return False
+    tx = box["x"] + box["width"] / 2 + random.uniform(-3, 3)
+    ty = box["y"] + box["height"] / 2 + random.uniform(-2, 2)
+    try:
+        # 1) 先在附近晃一下，制造移动历史
+        page.mouse.move(tx + random.uniform(-200, 200), ty + random.uniform(-120, 120), steps=10)
+        time.sleep(random.uniform(0.15, 0.35))
+        # 2) 分两段逼近目标
+        page.mouse.move(tx + random.uniform(-60, 60), ty + random.uniform(-40, 40), steps=12)
+        time.sleep(random.uniform(0.15, 0.4))
+        page.mouse.move(tx, ty, steps=18)
+        time.sleep(random.uniform(0.2, 0.5))
+        page.mouse.down()
+        time.sleep(random.uniform(0.05, 0.15))
+        page.mouse.up()
+        return True
+    except Exception as e:
+        log(f"⚠️ 真鼠标点击失败: {str(e)[:120]}")
+        return False
+
+
+def expand_turnstile(page):
+    """weirdhost 同款：把被盖住/压缩的验证框展开（overflow/尺寸修复），免得点不到"""
+    try:
+        page.evaluate(
+            """() => {
+                document.querySelectorAll('.cf-turnstile').forEach(function(c) {
+                    c.style.overflow = 'visible'; c.style.width = '300px'; c.style.height = '65px';
+                });
+                document.querySelectorAll('iframe').forEach(function(f) {
+                    if (f.src && f.src.includes('challenges.cloudflare.com')) {
+                        f.style.width = '300px'; f.style.height = '65px';
+                        f.style.visibility = 'visible'; f.style.opacity = '1';
+                    }
+                });
+            }"""
+        )
+    except Exception:
+        pass
+
+
 def handle_cloudflare(page, timeout=90):
     """处理 Cloudflare Turnstile 验证（复用 Hiden 骨架写法）
     timeout：本轮最多等待秒数；轮询中请传小值（如 15），避免一轮卡死
@@ -155,24 +204,26 @@ def handle_cloudflare(page, timeout=90):
                 return True
         except Exception:
             pass
-        # 策略1：iframe 内 checkbox 点击
+        # 策略1：先展开验证框，再真鼠标轨迹点击 checkbox（weirdhost 同款思路）
+        expand_turnstile(page)
         clicked = False
         try:
             frame = page.frame_locator(iframe_selector)
             checkbox = frame.locator('input[type="checkbox"]')
-            if checkbox.count() > 0:
-                try:
-                    if checkbox.first.is_visible(timeout=3000):
-                        log("🖱️ 点击验证复选框...")
-                        try:
-                            checkbox.first.click(timeout=5000)
-                        except Exception:
-                            checkbox.first.click(force=True, timeout=5000)
-                        clicked = True
-                except Exception as e:
-                    log(f"⚠️ 复选框点击失败，换 force 策略: {str(e)[:120]}")
-        except Exception:
-            pass
+            if checkbox.count() > 0 and checkbox.first.is_visible(timeout=3000):
+                checkbox.first.scroll_into_view_if_needed(timeout=3000)
+                log("🖱️ 真鼠标轨迹点击验证复选框...")
+                if human_mouse_click(page, checkbox.first):
+                    clicked = True
+                else:
+                    log("🖱️ 轨迹点击失败，改普通点击...")
+                    try:
+                        checkbox.first.click(timeout=5000)
+                    except Exception:
+                        checkbox.first.click(force=True, timeout=5000)
+                    clicked = True
+        except Exception as e:
+            log(f"⚠️ 复选框点击失败，换 force 策略: {str(e)[:120]}")
         # 策略2：直接 force 点 iframe 中心
         if not clicked:
             try:
