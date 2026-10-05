@@ -379,10 +379,47 @@ def find_button_by_text(sb, *keywords, timeout=10):
 
 
 def page_text(sb) -> str:
+    """只读可见文本（innerText），不读 page_source。
+    血泪教训：page_source 含 JS 包，'extended' 等词常驻会导致误判成功。"""
+    try:
+        t = sb.execute_script("return (document.body && document.body.innerText) || '';")
+        if t:
+            return str(t).lower()
+    except Exception:
+        pass
     try:
         return (sb.get_page_source() or "").lower()
     except Exception:
         return ""
+
+
+def dismiss_overlays(sb):
+    """关 cookie 横幅（Got it）与广告弹窗（Close），绝不碰续期弹窗本身。
+    截图实证：面板上有 'Download is ready / Tap to proceed' 广告盖住 Claim，
+    底部有 'We use cookies ... Got it' 横幅。续期弹窗内只有 Cancel/Claim/×，
+    没有 Close/Got it 文案；Close 额外做祖先保护（弹窗内则跳过）。"""
+    try:
+        btns = sb.find_elements("button")
+    except Exception:
+        return
+    for el in btns:
+        try:
+            if not el.is_displayed():
+                continue
+            txt = (el.text or "").strip()
+            if txt not in ("Close", "Got it", "关闭", "知道了"):
+                continue
+            if txt in ("Close", "关闭"):
+                try:
+                    el.find_element("xpath", "./ancestor::*[contains(., 'Claim Renewal') or contains(., 'Renew your server')]")
+                    continue  # 在续期弹窗内部，不碰
+                except Exception:
+                    pass
+            el.click()
+            print(f"  🚫 关闭遮挡弹窗: {txt}")
+            time.sleep(1)
+        except Exception:
+            continue
 
 
 # ---------- Cookie 免登 ----------
@@ -581,11 +618,28 @@ def renew_one_server(sb, server_uuid: str, precheck=None) -> dict:
                 break
         if article_handle is None:
             return {"status": "❌ 续期失败", "message": "文章页没弹出来（弹窗被拦，请加 --disable-popup-blocking）"}
-        print(f"  📰 文章页已打开，停留 {ARTICLE_WAIT}s（提前关闭会被警告）...")
-        sb.driver.switch_to.window(article_handle)
-        time.sleep(ARTICLE_WAIT)
-        sb.driver.close()
-        sb.driver.switch_to.window(list(before)[0])
+        print(f"  📰 文章页已打开，切回面板等倒计时 {ARTICLE_WAIT}s（文章页保持打开，提前关会被警告）...")
+        panel_handle = list(before)[0]
+        sb.driver.switch_to.window(panel_handle)
+        # 倒计时在面板页跑：每 2s 清一次广告/cookie 遮挡，文章标签页全程不关
+        dwell_end = time.time() + ARTICLE_WAIT
+        while time.time() < dwell_end:
+            try:
+                remove_ads(sb)
+            except Exception:
+                pass
+            try:
+                dismiss_overlays(sb)
+            except Exception:
+                pass
+            time.sleep(2)
+        print("  ⏱ 倒计时结束，关闭文章页...")
+        try:
+            sb.driver.switch_to.window(article_handle)
+            sb.driver.close()
+        except Exception:
+            pass
+        sb.driver.switch_to.window(panel_handle)
         time.sleep(4)
 
     # 3. 等倒计时走完（Claim 按钮出现，兼容翻译后的中文文案）
@@ -621,109 +675,155 @@ def renew_one_server(sb, server_uuid: str, precheck=None) -> dict:
             sb.save_screenshot(f"turnstile_fail_{sid}.png")
             return {"status": "❌ 续期失败", "message": "Turnstile 验证 6 次未通过"}
     else:
-        # 参考 XCQ0607/katabump：shadow-DOM 下 input 可能还没挂载，
-        # 但 checkbox iframe 已可点；仍尝试一次过盾，而不是直接放弃 Claim。
-        print("  ℹ️ 未检测到验证组件，尝试直接过盾一次（shadow-DOM 兜底）...")
-        try:
-            handle_turnstile(sb)
-        except Exception:
-            pass
+        # 没见到 widget 就不调 uc_gui_click_captcha（无目标只会空转 6 次）；
+        # 走“先点 Claim，验证码按需出现”的 XCQ 式流程，下一步处理。
+        print("  ℹ️ 未检测到验证组件，跳过预过盾（点 Claim 后按需验证）...")
 
     # 5. 点 Claim Renewal（用 JS 点击避免被遮挡）
-    # 参考 XCQ0607/katabump + oyz/FreezeHost：
+    # 参考 XCQ0607/katabump + oyz/FreezeHost，叠加本次实战修正：
     # ① React 按钮的 disabled 可能是属性/类/aria 三种形态，is_enabled() 不可信，
-    #    必须 scrollIntoView + 去广告遮挡后 JS 强点；
-    # ② 点完看页面文案（captcha/renewed）决定是补过盾还是成功，不只看 disabled；
-    # ③ 轮询上限走 CLAIM_TIMEOUT（默认 150s），之前硬编码 30*2=60s 太短。
+    #    截图实证 Claim 灰色不可点是常态——不管 disabled 与否都 JS 点一次，
+    #    由可见文案 + API 做最终裁判；
+    # ② 点完看可见文案（captcha/renewed）决定是补过盾还是成功；
+    # ③ Turnstile 经常点了 Claim 才渲染，点后按需过盾；
+    # ④ 轮询上限走 CLAIM_TIMEOUT（默认 150s）；
+    # ⑤ claimed 只在“可见成功文案”后置位，is_enabled 绝不算成功
+    #    （上次误报根源：is_enabled 恒真 + page_source 含 JS 常驻词）。
     print("  🖱️ 点 Claim Renewal...")
     claimed = False
+    cooldown_hint = ""
     deadline = time.time() + max(CLAIM_TIMEOUT, 60)
-    attempt_n = 0
     while time.time() < deadline:
-        attempt_n += 1
         try:
             remove_ads(sb)
-            try:
-                sb.execute_script(_EXPAND_JS)
-            except Exception:
-                pass
+        except Exception:
+            pass
+        try:
+            dismiss_overlays(sb)
+        except Exception:
+            pass
+        try:
+            sb.execute_script(_EXPAND_JS)
+        except Exception:
+            pass
+        btn = None
+        try:
             els = []
             for tag in ("button", "a"):
                 try:
                     els += sb.find_elements(tag)
                 except Exception:
                     pass
-            btns = [el for el in els
-                    if el.is_displayed() and any(k in (el.text or "").lower()
-                                                 for k in ("claim renewal", "claim", "认领", "领取"))]
-            if btns:
-                btn = btns[0]
+            for el in els:
                 try:
-                    sb.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
-                except Exception:
-                    pass
-                time.sleep(0.5)
-                try:
-                    if btn.is_enabled():
-                        sb.execute_script("arguments[0].click();", btn)
-                    else:
-                        # disabled 时先补一次过盾（验证刚完成、按钮还没刷新是常见竞态），
-                        # 仍不可点则去掉 disabled 强点一次，由后端/页面文案做最终裁判。
-                        if sb.execute_script(_SOLVED_JS):
-                            sb.execute_script(
-                                "arguments[0].removeAttribute('disabled');"
-                                "arguments[0].classList.remove('disabled');"
-                                "arguments[0].click();", btn)
-                        elif attempt_n % 5 == 0:
-                            print(f"  …Claim 仍不可点 ({attempt_n} 次)，已解验证="
-                                  f"{bool(sb.execute_script(_SOLVED_JS))}，继续等倒计时/验证")
-                except Exception:
-                    pass
-                # 每次点击后看结果文案：成功 / 仍要验证 / 继续轮询
-                time.sleep(2)
-                src_now = page_text(sb)
-                if any(k in src_now for k in ("renewed", "successfully renewed", "renewal successful", "extended")):
-                    claimed = True
-                    break
-                if "please complete the captcha" in src_now or ("captcha" in src_now and "complete" in src_now):
-                    print("  ⚠️ 页面提示先完成验证，补过盾一次...")
-                    try:
-                        handle_turnstile(sb)
-                    except Exception:
-                        pass
-                    continue
-                # 按钮已可点且点过一次，算 claimed，交给第 6 步统一判读
-                try:
-                    if btn.is_enabled():
-                        claimed = True
+                    if not el.is_displayed():
+                        continue
+                    if any(k in (el.text or "").lower() for k in ("claim renewal", "claim", "认领", "领取")):
+                        btn = el
                         break
                 except Exception:
-                    pass
+                    continue
         except Exception:
             pass
+        if btn is None:
+            time.sleep(2)
+            continue
+        try:
+            sb.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+        except Exception:
+            pass
+        time.sleep(0.5)
+        try:
+            sb.execute_script(
+                "arguments[0].removeAttribute('disabled');"
+                "arguments[0].removeAttribute('aria-disabled');"
+                "arguments[0].classList.remove('disabled');"
+                "arguments[0].click();", btn)
+        except Exception:
+            pass
+        time.sleep(3)
+        # 点完看 Turnstile 是否按需冒出来（点了 Claim 才渲染是常见形态）
+        try:
+            if sb.execute_script(_HAS_TURNSTILE_JS) and not sb.execute_script(_SOLVED_JS):
+                print("  🔍 点后出现验证组件，过盾...")
+                if handle_turnstile(sb):
+                    try:
+                        sb.execute_script("arguments[0].click();", btn)
+                    except Exception:
+                        pass
+                    time.sleep(3)
+        except Exception:
+            pass
+        src_now = page_text(sb)
+        if any(k in src_now for k in ("renewed", "successfully renewed", "renewal successful")):
+            claimed = True
+            break
+        if "please complete the captcha" in src_now or ("captcha" in src_now and "complete" in src_now):
+            print("  ⚠️ 页面提示先完成验证，补过盾一次...")
+            try:
+                if handle_turnstile(sb):
+                    try:
+                        sb.execute_script("arguments[0].click();", btn)
+                    except Exception:
+                        pass
+                    time.sleep(3)
+            except Exception:
+                pass
+            continue
+        # 弹窗还在 + 出现 "renewal in" 提示 → 大概率未到可续期时间，记下行文
+        if "renewal in" in src_now:
+            try:
+                for line in src_now.splitlines():
+                    if "renewal in" in line:
+                        cooldown_hint = line.strip()[:80]
+                        break
+            except Exception:
+                pass
         time.sleep(2)
     if not claimed:
         sb.save_screenshot(f"claim_disabled_{sid}.png")
+        if cooldown_hint:
+            return {"status": "⏭️ 跳过", "message": f"Claim 一直不可点，可能未到续期时间（{cooldown_hint}），已等{max(CLAIM_TIMEOUT, 60)}s"}
         return {"status": "❌ 续期失败", "message": f"Claim 按钮一直不可点（倒计时/验证没完成，已等{max(CLAIM_TIMEOUT, 60)}s）"}
     time.sleep(8)
 
-    # 6. 读结果
+    # 6. 读结果：可见文案 + API 双重确认，API 是最终裁判
+    # （只信 innerText；'extended' 一词 JS 包常驻，已从成功关键词里剔除）
     src = page_text(sb)
     if "renew limit reached" in src:
         return {"status": "⏭️ 跳过", "message": "已达续期上限（Renew Limit Reached）"}
-    if any(k in src for k in ("renewed", "successfully renewed", "renewal successful", "extended")):
+    before_renewal, before_full = None, ""
+    if precheck and isinstance(precheck.get("info"), tuple) and len(precheck["info"]) == 3:
+        before_renewal, _, before_full = precheck["info"]
+        before_full = str(before_full or "")
+    after_renewal, after_full = None, ""
+    if precheck and precheck.get("api_session"):
+        try:
+            after_renewal, _, exp = api_get_info(precheck["api_session"], precheck["api_xsrf"], server_uuid)
+            after_full = str(exp or "")
+        except Exception:
+            pass
+    after_exp = (after_full or "")[:10]
+    before_exp = (before_full or "")[:10]
+    api_confirmed = (
+        after_renewal is not None and before_renewal is not None and after_renewal > before_renewal
+    ) or (
+        bool(after_full) and bool(before_full) and after_full > before_full
+    )
+    page_ok = any(k in src for k in ("renewed", "successfully renewed", "renewal successful"))
+    if page_ok and (api_confirmed or after_renewal is None):
         ss_path = f"renew_success_{sid}.png"
         sb.save_screenshot(ss_path)
         print(f"  📸 截图: {ss_path}")
-        after_exp = ""
-        if precheck and precheck.get("api_session"):
-            try:
-                _, _, exp = api_get_info(precheck["api_session"], precheck["api_xsrf"], server_uuid)
-                if exp:
-                    after_exp = exp[:10]
-            except Exception:
-                pass
-        return {"status": "✅ 续期成功", "message": "Claim 成功（页面确认）", "screenshot": ss_path, "expires_at": after_exp, "after_exp": after_exp}
+        return {"status": "✅ 续期成功", "message": "Claim 成功（页面+API 双确认）", "screenshot": ss_path, "expires_at": after_exp, "after_exp": after_exp, "before_exp": before_exp}
+    if page_ok and not api_confirmed:
+        sb.save_screenshot(f"claim_unconfirmed_{sid}.png")
+        return {"status": "⚠️ 未知结果", "message": "页面像成功了但 API 到期时间没变，不敢报成功，请人工看一眼面板"}
+    if api_confirmed:
+        ss_path = f"renew_success_{sid}.png"
+        sb.save_screenshot(ss_path)
+        print(f"  📸 截图: {ss_path}")
+        return {"status": "✅ 续期成功", "message": "Claim 成功（API 到期时间已延后）", "screenshot": ss_path, "expires_at": after_exp, "after_exp": after_exp, "before_exp": before_exp}
     if "captcha" in src and "complete" in src:
         return {"status": "❌ 续期失败", "message": "提交后仍提示先完成验证"}
     sb.save_screenshot(f"claim_unknown_{sid}.png")
