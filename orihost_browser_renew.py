@@ -356,7 +356,7 @@ _REMOVE_ADS_JS = """
         var src = f.src || '';
         if (!src) return;
         if (src.includes('challenges.cloudflare.com')) return;  // 验证框，绝不能动
-        var bad = /n6wxm|nap5k|5gvci|jhnwr|rtmark|vignette|tag\.min\.js|\bad\b|advert|popup|overlay|modal/i.test(src);
+        var bad = /n6wxm|nap5k|5gvci|jhnwr|rtmark|vignette|tag\\.min\\.js|\\bad\\b|advert|popup|overlay|modal/i.test(src);
         var sameOrigin = src.indexOf(location.origin) === 0 || src.charAt(0) === '/';
         var allowed = allow.some(function(a){ return src.includes(a); });
         if (bad || (!sameOrigin && !allowed)) {
