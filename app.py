@@ -23,6 +23,7 @@ ORIHOST_REMEMBER = (
     or ""
 ).strip()
 ORIHOST_SERVER_IDS = os.environ.get('ORIHOST_SERVER_IDS') or ""  # 单服：短ID 或 完整 UUID
+EMAIL = os.environ.get('EMAIL') or os.environ.get('ORIHOST_EMAIL') or ""  # 仅用于 TG 通知脱敏展示
 TG_BOT_TOKEN = os.environ.get('TG_BOT_TOKEN') or ""
 TG_CHAT_ID = os.environ.get('TG_CHAT_ID') or ""
 # 兼容 TG_BOT="chat_id,bot_token" 写法
@@ -102,20 +103,32 @@ def get_current_ip(proxy_server=None):
         return "获取失败"
 
 
-def send_telegram_notification(status, old_due, new_due):
-    """发送 Telegram 通知（单服版）"""
+def send_telegram_notification(status, old_due, new_due, current_ip="未知"):
+    """发送 Telegram 通知（对齐 eooce/Auto-Renew-HidenCloud 风格）"""
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         log("⚠️ Telegram 未配置，跳过通知")
         return False
 
     local_time = time.gmtime(time.time() + 8 * 3600)
     now = time.strftime("%Y-%m-%d %H:%M:%S", local_time)
+    if '@' in EMAIL:
+        name, domain = EMAIL.split('@', 1)
+        if len(name) > 4:
+            masked_email = f"{name[:2]}****{name[-2:]}@{domain}"
+        else:
+            masked_email = f"{name}@{domain}"
+    elif EMAIL:
+        masked_email = EMAIL[:2] + '****'
+    else:
+        masked_email = f"服务器 {SERVER_SHORT_ID}"
+
     text = (
         f"🎉 Orihost 续期通知\n\n"
         f"{status}\n"
-        f"🖥️ 服务器: {SERVER_SHORT_ID}\n"
-        f"📅 续期前：{old_due}\n"
-        f"📅 续期后：{new_due}\n"
+        f"👤 账号: {masked_email}\n"
+        f"📅 续期前到期：{old_due}\n"
+        f"📅 续期后到期：{new_due}\n"
+        f"🌐 续期使用IP: {current_ip}\n"
         f"🕒 续期时间：{now}"
     )
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
@@ -419,6 +432,7 @@ def renew_service(page):
         handle_cloudflare(page)
 
         # 1. 点 Renew（bundle 选择器按文本兜底，避免 styled-components 类名漂移）
+        # 未到续期时间时按钮为 disabled 置灰（文案 "Renew Limit Reached"），直接跳过不报错
         log("🖱️ 点击 'Renew'...")
         renew_btn = page.locator('button:has-text("Renew")').first
         try:
@@ -427,8 +441,44 @@ def renew_service(page):
             log("❌ 找不到 Renew 按钮")
             page.screenshot(path="renew_no_button.png")
             return False
+        try:
+            body_pre = page.locator("body").inner_text(timeout=5000)
+        except Exception:
+            body_pre = ""
+        if "Renew Limit Reached" in body_pre or "renewal limit" in body_pre.lower():
+            log("⏳ 未到续期时间（Renew Limit Reached），本轮跳过")
+            return "NOT_TIME"
+        try:
+            if renew_btn.is_disabled() or not renew_btn.is_enabled():
+                log("⏳ Renew 按钮置灰（disabled），未到续期时间，本轮跳过")
+                return "NOT_TIME"
+        except Exception:
+            pass
         renew_btn.scroll_into_view_if_needed()
-        renew_btn.click()
+        try:
+            renew_btn.click(timeout=10000)
+        except Exception as e:
+            msg = str(e)
+            if "not enabled" in msg.lower() or "disabled" in msg.lower():
+                log("⏳ Renew 按钮不可点（置灰），未到续期时间，本轮跳过")
+                return "NOT_TIME"
+            # 点击超时后复查一次：可能是刚变成置灰
+            try:
+                body_retry = page.locator("body").inner_text(timeout=5000)
+            except Exception:
+                body_retry = ""
+            if "Renew Limit Reached" in body_retry or "renewal limit" in body_retry.lower():
+                log("⏳ 未到续期时间（Renew Limit Reached），本轮跳过")
+                return "NOT_TIME"
+            try:
+                if renew_btn.is_disabled():
+                    log("⏳ Renew 按钮置灰（disabled），未到续期时间，本轮跳过")
+                    return "NOT_TIME"
+            except Exception:
+                pass
+            log(f"❌ 点击 Renew 失败: {msg[:200]}")
+            page.screenshot(path="renew_click_fail.png")
+            return False
         time.sleep(2)
         close_center_ad(page)
 
@@ -616,7 +666,7 @@ def main():
             page.add_init_script(STEALTH_JS)
 
             if not login(page):
-                send_telegram_notification("❌ 登录失败（Cookie 失效）", "未知", "未知")
+                send_telegram_notification("❌ 登录失败（Cookie 失效）", "未知", "未知", current_ip)
                 sys.exit(1)
 
             # 续期前剩余天数
@@ -639,7 +689,7 @@ def main():
                 log(f"📆 续期后：{new_due}")
                 status = "✅ 续期成功"
 
-            send_telegram_notification(status, old_due, new_due)
+            send_telegram_notification(status, old_due, new_due, current_ip)
 
             if renew_result is False:
                 sys.exit(1)
